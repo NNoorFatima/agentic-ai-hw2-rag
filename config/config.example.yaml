@@ -1,0 +1,20 @@
+# Copy to config.yaml and fill in. Do not commit config.yaml with secrets.
+#
+# LLM / API: Do NOT use OpenAI. Use Groq, Google Gemini (free tier), or another free LLM.
+# Set generation_model to the model name for your chosen provider (e.g. Groq or Gemini model).
+#
+# Dataset path (relative to project root)
+dataset_path: "dataset/crag_task_1_and_2_dev_v4.jsonl"
+
+# Embedding model (e.g. sentence-transformers model name)
+embedding_model: "all-MiniLM-L6-v2"
+
+# LLM for generation: Groq, Gemini, or other free provider only (no OpenAI).
+# Examples: Groq model name, or Gemini model name (e.g. gemini-1.5-flash).
+generation_model: "gemini-1.5-flash"
+
+# Top-k chunks to retrieve from the global index per query
+top_k: 3
+
+# Optional: path to save/load the embedding index (so you don't rebuild every time)
+# index_path: "index/crag_index"
