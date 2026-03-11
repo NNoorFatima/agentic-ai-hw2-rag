@@ -1,48 +1,51 @@
 """
-hyde.py
--------
-HyDE (Hypothetical Document Embedding) Pipeline
-
+hyde.py  —  HyDE (Hypothetical Document Embedding)
+---------------------------------------------------
 Algorithm
----------
-1. Given a query, use an LLM to generate a hypothetical document (1–2 paragraphs)
-   that *might* contain the answer.
-2. Embed the hypothetical document (NOT the raw query).
-3. Retrieve top-k chunks from the global index by similarity to this embedding.
-4. Pass the real retrieved chunks + query to the LLM for the final answer.
+  1. LLM writes a 3-4 sentence hypothetical passage that WOULD answer the query.
+  2. Embed the hypothetical passage (not the raw query).
+  3. Retrieve top-K real chunks closest to that embedding.
+  4. ALSO retrieve top-K using the raw query embedding (hybrid).
+  5. Merge both ranked lists with RRF for best coverage.
+  6. LLM generates the final answer from retrieved real chunks.
 
-Why it works: a hypothetical document shares vocabulary and style with actual
-answer-containing documents, so its embedding is closer to relevant chunks than
-the raw question's embedding.
+Key fixes vs previous version
+  - GROQ_API_KEY is now checked first
+  - Hybrid retrieval (HyDE + raw query) via RRF — handles cases where the
+    hypothetical doc drifts away from the actual corpus vocabulary
+  - fetch_k = top_k * 2 before merging
 """
 
 import os
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Dict, Optional
+
+
+def _resolve_key(api_key):
+    return (api_key
+            or os.environ.get("GROQ_API_KEY")
+            or os.environ.get("OPENAI_API_KEY")
+            or os.environ.get("ANTHROPIC_API_KEY"))
 
 
 def _generate_hypothetical_doc(
     query: str,
     provider: str = "groq",
-    model: str = "llama3-8b-8192",
+    model: str = "llama3-70b-8192",
     api_key: Optional[str] = None,
 ) -> str:
-    """
-    Ask an LLM to write a short hypothetical document answering the query.
-    Falls back to an extended query string if LLM is unavailable.
-    """
-    api_key = api_key or os.environ.get("OPENAI_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
-
+    api_key = _resolve_key(api_key)
     system = (
-        "You are a knowledgeable assistant. "
-        "Write a short 2–3 sentence passage that directly answers the following question. "
-        "Write as if you are a web page or encyclopedia article. "
-        "Be factual and use relevant terminology."
+        "You are an expert fact writer. "
+        "Write a short 3-4 sentence factual passage — like a Wikipedia paragraph — "
+        "that directly and completely answers the question. "
+        "Include the specific facts, names, dates, or numbers the answer requires. "
+        "Do NOT say 'I' or 'the answer is'. Write as a reference article."
     )
-    prompt = f"Question: {query}\n\nPassage:"
+    prompt = f"Question: {query}\n\nFactual passage:"
 
-    if api_key:
+    if api_key and provider != "local":
         try:
-            if provider in ("openai", "groq"):
+            if provider in ("groq", "openai"):
                 from openai import OpenAI
                 base_url = "https://api.groq.com/openai/v1" if provider == "groq" else None
                 client = OpenAI(api_key=api_key, base_url=base_url)
@@ -50,71 +53,93 @@ def _generate_hypothetical_doc(
                     model=model,
                     messages=[
                         {"role": "system", "content": system},
-                        {"role": "user", "content": prompt},
+                        {"role": "user",   "content": prompt},
                     ],
-                    max_tokens=200,
-                    temperature=0.7,
+                    max_tokens=250,
+                    temperature=0.5,
                 )
-                return resp.choices[0].message.content.strip()
-
+                doc = resp.choices[0].message.content.strip()
+                if doc:
+                    return doc
             elif provider == "anthropic":
                 import anthropic
                 client = anthropic.Anthropic(api_key=api_key)
                 resp = client.messages.create(
-                    model=model,
-                    max_tokens=200,
-                    temperature=0.7,
+                    model=model, max_tokens=250, temperature=0.5,
                     system=system,
                     messages=[{"role": "user", "content": prompt}],
                 )
-                return resp.content[0].text.strip()
-
+                doc = resp.content[0].text.strip()
+                if doc:
+                    return doc
         except Exception as exc:
-            print(f"[hyde] Hypothetical doc generation failed: {exc}. Using fallback.")
+            print(f"[hyde] hypothetical doc failed: {exc}")
 
-    # Heuristic fallback: expand the query into a pseudo-document
-    return (
-        f"The answer to '{query}' can be found in the following information. "
-        f"{query.rstrip('?')} is a well-documented topic. "
-        f"According to various sources, the relevant facts about {query} are as follows."
+    # Heuristic fallback — expand query into pseudo-document
+    import re
+    keywords = " ".join(
+        w for w in re.findall(r'\b\w{4,}\b', query.lower())
+        if w not in {"what","when","where","which","that","this","with","from",
+                     "have","does","been","will","would","could","directed","released"}
     )
+    return (
+        f"{query.rstrip('?')}. "
+        f"This topic involves {keywords}. "
+        f"The key facts related to {keywords} include specific names, dates, and details "
+        f"found in encyclopedic and news sources."
+    )
+
+
+def _rrf(lists, k=60):
+    scores, store = {}, {}
+    for lst in lists:
+        for rank, (text, _, meta) in enumerate(lst, 1):
+            key = text[:200]
+            scores[key] = scores.get(key, 0.0) + 1.0 / (k + rank)
+            store[key]  = (text, meta)
+    return [(store[k][0], scores[k], store[k][1])
+            for k in sorted(scores, key=lambda x: scores[x], reverse=True)]
 
 
 def run(
     query: str,
     corpus_index,
-    top_k: int = 5,
+    top_k: int = 10,
     embedding_model: str = "all-MiniLM-L6-v2",
     provider: str = "groq",
-    gen_model: str = "llama3-8b-8192",
+    gen_model: str = "llama3-70b-8192",
     api_key: Optional[str] = None,
     **kwargs,
 ) -> dict:
-    """
-    HyDE pipeline.
-
-    Returns
-    -------
-    dict with keys: answer, retrieved, pipeline, hypothetical_doc
-    """
     from src.retrieval import embed_query
     from src.generation import generate_answer
 
-    # Step 1: Generate hypothetical document
-    hyp_doc = _generate_hypothetical_doc(query, provider=provider, model=gen_model, api_key=api_key)
+    api_key = _resolve_key(api_key)
+    fetch_k = top_k * 2
 
-    # Step 2: Embed the hypothetical document
-    hyp_emb = embed_query(hyp_doc, model_name=embedding_model)
+    # 1. Generate hypothetical document
+    hyp_doc = _generate_hypothetical_doc(
+        query, provider=provider, model=gen_model, api_key=api_key
+    )
 
-    # Step 3: Retrieve using hypothetical doc embedding
-    retrieved = corpus_index.retrieve(hyp_emb, top_k=top_k)
+    # 2. Embed hypothetical doc → retrieve
+    hyp_emb  = embed_query(hyp_doc, model_name=embedding_model)
+    hyp_hits = corpus_index.retrieve(hyp_emb, top_k=fetch_k)
 
-    # Step 4: Generate final answer from real retrieved chunks
-    answer = generate_answer(query, retrieved, provider=provider, model=gen_model, api_key=api_key)
+    # 3. Also retrieve with raw query embedding (hybrid safety net)
+    raw_emb  = embed_query(query, model_name=embedding_model)
+    raw_hits = corpus_index.retrieve(raw_emb, top_k=fetch_k)
 
+    # 4. Merge with RRF
+    merged = _rrf([hyp_hits, raw_hits])
+    retrieved = merged[:top_k]
+
+    # 5. Generate answer from real retrieved chunks
+    answer = generate_answer(query, retrieved,
+                              provider=provider, model=gen_model, api_key=api_key)
     return {
-        "pipeline": "hyde",
-        "answer": answer,
-        "retrieved": retrieved,
+        "pipeline":         "hyde",
+        "answer":           answer,
+        "retrieved":        retrieved,
         "hypothetical_doc": hyp_doc,
     }

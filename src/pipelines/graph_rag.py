@@ -1,38 +1,22 @@
-# """
-# Graph RAG: graph-augmented retrieval over the corpus (e.g. entity/relation graph or similarity graph), then generate.
-# Do not remove or rename this file.
-# """
-
-# # TODO: Implement run(query, index, embedder, top_k, generator) -> (retrieved_passages, answer).
-# # Build or use a graph over the corpus (entities, relations, or chunk similarity) ->
-# # retrieve in a graph-aware way (e.g. entity linking, subgraph, spread from seeds) ->
-# # convert selected graph neighborhood to text -> generate answer from that context.
 """
-graph_rag.py
-------------
-Graph RAG Pipeline
-
+graph_rag.py  —  Graph-Augmented RAG
+--------------------------------------
 Algorithm
----------
-1. Build a chunk-similarity graph over the corpus (done once per corpus_index).
-   - Nodes = corpus chunks
-   - Edges = cosine similarity above a threshold between two chunks
+  1. Retrieve seed nodes (top seed_k by vector similarity).
+  2. Build / reuse a chunk-similarity graph:
+       edge(i,j) exists if cosine(emb_i, emb_j) >= threshold.
+  3. BFS-expand from seeds up to max_hops.
+  4. Score ALL candidates (seeds + neighbours) against the query.
+  5. Take top_k highest-scoring candidates → LLM generation.
 
-2. For a query:
-   a. Retrieve seed nodes (top-k by vector similarity, same as baseline).
-   b. Expand: collect 1-hop or 2-hop neighbours of seed nodes in the graph.
-   c. Score all candidates (seeds + neighbours) by their similarity to the query.
-   d. Take top-k from this expanded candidate set.
-   e. Pass to LLM for generation.
-
-Why it helps on noisy corpora:
-- If a directly-retrieved chunk is a near-duplicate of a more relevant chunk,
-  graph traversal surfaces the better chunk.
-- Multi-hop questions benefit from chunks that are conceptually linked even
-  if not lexically similar to the query.
-
-Note: Graph construction is lazy and cached on the corpus_index object
-to avoid rebuilding on every call.
+Key fixes vs previous version
+  - seed_k is now 2×top_k so the graph has a much wider starting set
+  - similarity_threshold lowered to 0.60 (was 0.72) — denser graph,
+    more useful expansions on a 9k-chunk corpus
+  - max_hops=2 (was 1) for deeper traversal
+  - index lookup uses a pre-built text→index dict (O(1)) instead of
+    list.index() which was O(N) and caused missed seeds
+  - GROQ_API_KEY checked first
 """
 
 import os
@@ -40,162 +24,136 @@ from typing import List, Tuple, Optional, Dict, Set
 import numpy as np
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Graph construction (lazy, cached per index)
-# ──────────────────────────────────────────────────────────────────────────────
+def _resolve_key(api_key):
+    return (api_key
+            or os.environ.get("GROQ_API_KEY")
+            or os.environ.get("OPENAI_API_KEY")
+            or os.environ.get("ANTHROPIC_API_KEY"))
 
-def _build_chunk_graph(
-    corpus_index,
-    similarity_threshold: float = 0.75,
-) -> Dict[int, List[int]]:
-    """
-    Build an adjacency list where edge (i, j) exists iff
-    cosine_similarity(embeddings[i], embeddings[j]) >= similarity_threshold.
 
-    Uses batched matrix multiplication for efficiency.
-    Returns dict: node_id -> list of neighbour node_ids
-    """
-    import networkx as nx
+# ── Graph construction ────────────────────────────────────────────────────────
 
-    emb = corpus_index.embeddings.astype("float32")
+def _build_graph(corpus_index, threshold: float) -> Dict[int, List[int]]:
+    emb   = corpus_index.embeddings.astype("float32")
     norms = np.linalg.norm(emb, axis=1, keepdims=True)
     norms = np.where(norms == 0, 1e-9, norms)
     normed = emb / norms
 
-    n = len(normed)
-    adjacency: Dict[int, List[int]] = {i: [] for i in range(n)}
+    n   = len(normed)
+    adj: Dict[int, List[int]] = {i: [] for i in range(n)}
 
-    # Process in batches to avoid OOM on large corpora
-    batch_size = 512
-    for start in range(0, n, batch_size):
-        end = min(start + batch_size, n)
-        batch = normed[start:end]          # (B, dim)
-        sims = batch @ normed.T            # (B, N)
+    batch = 512
+    for start in range(0, n, batch):
+        end  = min(start + batch, n)
+        sims = normed[start:end] @ normed.T          # (B, N)
+        for li, gi in enumerate(range(start, end)):
+            nbrs = np.where(sims[li] >= threshold)[0].tolist()
+            adj[gi] = [j for j in nbrs if j != gi]
 
-        for local_i, global_i in enumerate(range(start, end)):
-            row = sims[local_i]
-            neighbours = np.where(row >= similarity_threshold)[0].tolist()
-            # Exclude self
-            neighbours = [j for j in neighbours if j != global_i]
-            adjacency[global_i] = neighbours
-
-    return adjacency
+    return adj
 
 
-def _get_graph(corpus_index, similarity_threshold: float = 0.75) -> Dict[int, List[int]]:
-    """Lazily build and cache the chunk graph on the corpus_index object."""
-    cache_key = f"_graph_{similarity_threshold}"
-    if not hasattr(corpus_index, cache_key):
-        print(f"[graph_rag] Building chunk similarity graph (threshold={similarity_threshold}) …")
-        graph = _build_chunk_graph(corpus_index, similarity_threshold)
-        setattr(corpus_index, cache_key, graph)
-        print(f"[graph_rag] Graph built: {len(graph)} nodes.")
-    return getattr(corpus_index, cache_key)
+def _get_graph(corpus_index, threshold: float) -> Dict[int, List[int]]:
+    key = f"_graph_{threshold}"
+    if not hasattr(corpus_index, key):
+        n = len(corpus_index.chunks)
+        print(f"[graph_rag] Building similarity graph ({n} nodes, threshold={threshold}) …")
+        setattr(corpus_index, key, _build_graph(corpus_index, threshold))
+        print(f"[graph_rag] Graph ready.")
+    return getattr(corpus_index, key)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Graph-aware retrieval
-# ──────────────────────────────────────────────────────────────────────────────
+def _get_text_index(corpus_index) -> Dict[str, int]:
+    """Pre-built text→chunk_index map for O(1) seed lookup."""
+    if not hasattr(corpus_index, "_text_index"):
+        corpus_index._text_index = {c["text"]: i for i, c in enumerate(corpus_index.chunks)}
+    return corpus_index._text_index
 
-def _expand_via_graph(
-    seed_indices: List[int],
-    graph: Dict[int, List[int]],
-    max_hops: int = 2,
-    max_candidates: int = 50,
-) -> Set[int]:
-    """BFS/DFS expansion from seed nodes up to max_hops."""
-    visited: Set[int] = set(seed_indices)
-    frontier: Set[int] = set(seed_indices)
 
+# ── BFS expansion ─────────────────────────────────────────────────────────────
+
+def _bfs(seeds: List[int], graph: Dict[int, List[int]],
+         max_hops: int, max_nodes: int) -> Set[int]:
+    visited  = set(seeds)
+    frontier = set(seeds)
     for _ in range(max_hops):
-        next_frontier: Set[int] = set()
+        nxt = set()
         for node in frontier:
-            for neighbour in graph.get(node, []):
-                if neighbour not in visited:
-                    next_frontier.add(neighbour)
-                    visited.add(neighbour)
-        frontier = next_frontier
-        if len(visited) >= max_candidates:
+            for nb in graph.get(node, []):
+                if nb not in visited:
+                    nxt.add(nb); visited.add(nb)
+        frontier = nxt
+        if len(visited) >= max_nodes:
             break
-
     return visited
 
+
+# ── Pipeline run ──────────────────────────────────────────────────────────────
 
 def run(
     query: str,
     corpus_index,
-    top_k: int = 5,
-    seed_k: int = 5,
-    similarity_threshold: float = 0.72,
-    max_hops: int = 1,
+    top_k: int = 10,
+    seed_k: int = None,            # defaults to top_k*2
+    similarity_threshold: float = 0.60,
+    max_hops: int = 2,
+    max_candidates: int = 200,
     embedding_model: str = "all-MiniLM-L6-v2",
-    provider: str = "openai",
-    gen_model: str = "gpt-4o-mini",
+    provider: str = "groq",
+    gen_model: str = "llama3-70b-8192",
     api_key: Optional[str] = None,
     **kwargs,
 ) -> dict:
-    """
-    Graph RAG pipeline.
-
-    Returns
-    -------
-    dict with keys: answer, retrieved, pipeline, seed_indices, expanded_count
-    """
     from src.retrieval import embed_query
     from src.generation import generate_answer
 
-    # Step 1: Standard seed retrieval
-    q_emb = embed_query(query, model_name=embedding_model)
-    seed_results = corpus_index.retrieve(q_emb, top_k=seed_k)
+    api_key = _resolve_key(api_key)
+    if seed_k is None:
+        seed_k = top_k * 2
 
-    # Find indices of seed chunks in the corpus
-    chunk_texts = [c["text"] for c in corpus_index.chunks]
+    # 1. Seed retrieval
+    q_emb      = embed_query(query, model_name=embedding_model)
+    seed_hits  = corpus_index.retrieve(q_emb, top_k=seed_k)
+
+    # 2. Map seed texts → indices (O(1) lookup)
+    text_idx    = _get_text_index(corpus_index)
     seed_indices = []
-    for (text, score, meta) in seed_results:
-        try:
-            idx = chunk_texts.index(text)
+    for (text, _, _) in seed_hits:
+        idx = text_idx.get(text)
+        if idx is not None:
             seed_indices.append(idx)
-        except ValueError:
-            pass  # chunk not found (shouldn't happen)
 
-    # Step 2: Graph expansion
-    graph = _get_graph(corpus_index, similarity_threshold=similarity_threshold)
-    candidate_indices = _expand_via_graph(seed_indices, graph, max_hops=max_hops)
+    # 3. Graph BFS expansion
+    graph      = _get_graph(corpus_index, threshold=similarity_threshold)
+    candidates = _bfs(seed_indices, graph, max_hops=max_hops, max_nodes=max_candidates)
+    if not candidates:
+        candidates = set(seed_indices)
 
-    # Step 3: Score all candidates against query embedding
-    emb = corpus_index.embeddings.astype("float32")
+    # 4. Score candidates against query
+    emb   = corpus_index.embeddings.astype("float32")
     norms = np.linalg.norm(emb, axis=1, keepdims=True)
     norms = np.where(norms == 0, 1e-9, norms)
     normed = emb / norms
 
     q_norm = q_emb / (np.linalg.norm(q_emb) + 1e-9)
+    cand_list = list(candidates)
+    sims      = (normed[cand_list] @ q_norm).tolist()
 
-    candidate_list = list(candidate_indices)
-    if not candidate_list:
-        candidate_list = seed_indices
+    top_scored = sorted(zip(cand_list, sims), key=lambda x: x[1], reverse=True)[:top_k]
 
-    candidate_embs = normed[candidate_list]          # (M, dim)
-    scores = (candidate_embs @ q_norm).tolist()      # (M,)
-
-    scored = sorted(
-        zip(candidate_list, scores),
-        key=lambda x: x[1],
-        reverse=True,
-    )[:top_k]
-
-    # Step 4: Build retrieved list
+    # 5. Build retrieved list
     retrieved = []
-    for idx, score in scored:
+    for idx, score in top_scored:
         chunk = corpus_index.chunks[idx]
         retrieved.append((chunk["text"], float(score), chunk))
 
-    # Step 5: Generate answer
-    answer = generate_answer(query, retrieved, provider=provider, model=gen_model, api_key=api_key)
-
+    # 6. Generate
+    answer = generate_answer(query, retrieved,
+                              provider=provider, model=gen_model, api_key=api_key)
     return {
-        "pipeline": "graph_rag",
-        "answer": answer,
-        "retrieved": retrieved,
-        "seed_indices": seed_indices,
-        "expanded_count": len(candidate_indices),
+        "pipeline":       "graph_rag",
+        "answer":         answer,
+        "retrieved":      retrieved,
+        "seed_indices":   seed_indices,
+        "expanded_count": len(candidates),
     }

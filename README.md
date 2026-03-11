@@ -74,3 +74,40 @@ Open the URL shown (e.g. http://localhost:3000). You need a backend that loads t
 ## Folder structure
 
 Do not change the folder structure. Required layout and the full case-study description are in `ASSIGNMENT.md`.
+
+
+## how to run for noot 
+```bash
+python -c "from src.corpus import build_index; build_index('dataset/crag_task_1_and_2_dev_v4.jsonl', index_dir='data')"
+```
+This reads the dataset, embeds all chunks, and saves the FAISS index to the data/ folder. You only do this once.
+
+
+```bash
+set GROQ_API_KEY=gsk_your_key_here
+python run_evaluation.py --provider groq --model llama3-70b-8192 --max-examples 100
+```
+```bash
+# Terminal 1 — backend
+set GROQ_API_KEY=gsk_your_key_here
+python api_server.py
+
+# Terminal 2 — frontend
+cd frontend
+npm install
+npm run dev
+```
+
+---
+
+## How the files relate to each other
+```bash
+run_evaluation.py         ← you run this
+    └── calls pipelines/  ← auto-imported
+         └── calls generation.py   ← auto-imported
+              └── calls Groq/OpenAI API
+
+api_server.py             ← you run this for the UI
+    └── same chain above
+
+```
