@@ -126,10 +126,10 @@ def _rrf(ranked_lists: List[List[Tuple[str, float, dict]]], k: int = 60) -> List
 def run(
     query: str,
     corpus_index,
-    top_k: int = 10,
+    top_k: int = 15,
     num_variants: int = 4,
     rrf_k: int = 60,
-    embedding_model: str = "all-MiniLM-L6-v2",
+    embedding_model: str = "all-mpnet-base-v2",
     provider: str = "groq",
     gen_model: str = "llama3-70b-8192",
     api_key: Optional[str] = None,

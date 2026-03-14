@@ -110,7 +110,7 @@ def is_correct(
     pred: str,
     answer: str,
     alt_ans: Union[str, List[str], None] = None,
-    f1_threshold: float = 0.2,          # increased from 0.3 for better long gold answers
+    f1_threshold: float = 0.3,          # increased for better matching on partial answers
 ) -> bool:
     """
     Increasing the score will make the evaluation more stringent.
@@ -179,7 +179,7 @@ def is_correct(
 
 # ── Compute accuracy ──────────────────────────────────────────────────────────
 
-def compute_accuracy(results: List[dict], f1_threshold: float = 0.3) -> dict:
+def compute_accuracy(results: List[dict], f1_threshold: float = 0.4) -> dict:
     correct, per_result = 0, []
     for r in results:
         ok = r.get('correct')

@@ -33,7 +33,7 @@ def _get_index():
     if _corpus_index is None:
         from src.corpus import load_index
         index_dir = os.environ.get("INDEX_DIR", "data")
-        embedding_model = os.environ.get("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+        embedding_model = os.environ.get("EMBEDDING_MODEL", "all-mpnet-base-v2")
         print(f"[api_server] Loading index from '{index_dir}' …")
         _corpus_index = load_index(index_dir=index_dir, embedding_model=embedding_model)
         print(f"[api_server] Index loaded: {len(_corpus_index)} chunks")
@@ -85,7 +85,7 @@ def query_endpoint():
     provider = os.environ.get("LLM_PROVIDER", "groq")
     model = os.environ.get("LLM_MODEL", "llama3-70b-8192")
     api_key = os.environ.get("GROQ_API_KEY") or os.environ.get("OPENAI_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
-    embedding_model = os.environ.get("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+    embedding_model = os.environ.get("EMBEDDING_MODEL", "all-mpnet-base-v2")
 
     try:
         corpus_index = _get_index()

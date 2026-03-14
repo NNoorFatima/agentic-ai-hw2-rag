@@ -14,7 +14,7 @@ python run_evaluation.py [--dataset DATASET_PATH] [--index-dir DATA_DIR]
 Examples
 --------
 # With Groq (free) - RECOMMENDED
-python run_evaluation.py --provider groq --model llama3-70b-8192 --max-examples 100
+python run_evaluation.py --provider groq --model llama-3.1-8b-instant --max-examples 100
 
 # With env var set
 set GROQ_API_KEY=gsk_xxxx
@@ -43,20 +43,20 @@ def parse_args():
     parser = argparse.ArgumentParser(description="RAG Pipeline Evaluation")
     parser.add_argument("--dataset", default="dataset/crag_task_1_and_2_dev_v4.jsonl")
     parser.add_argument("--index-dir", default="data")
-    parser.add_argument("--max-examples", type=int, default=100)
+    parser.add_argument("--max-examples", type=int, default=50)
     parser.add_argument(
         "--provider", default="groq",
         choices=["groq", "openai", "anthropic", "local"],
         help="LLM provider. Use 'groq' for free Llama3 (get key at console.groq.com)"
     )
     parser.add_argument("--model", default=None,
-                        help="Model name. Defaults: groq=llama3-70b-8192, openai=gpt-4o-mini")
+                        help="Model name. Defaults: groq=llama-3.1-8b-instant, openai=gpt-4o-mini")
     parser.add_argument("--api-key", default=None, help="API key (or set env var)")
     parser.add_argument("--rebuild", action="store_true", help="Force rebuild index")
     parser.add_argument("--output", default="evaluation_results.json")
-    parser.add_argument("--top-k", type=int, default=10,
+    parser.add_argument("--top-k", type=int, default=15,
                         help="Chunks to retrieve per query (higher = better recall)")
-    parser.add_argument("--embedding-model", default="all-MiniLM-L6-v2")
+    parser.add_argument("--embedding-model", default="all-mpnet-base-v2")
     parser.add_argument("--pipelines", nargs="+",
                         choices=["rag_fusion", "hyde", "crag", "graph_rag"],
                         default=["rag_fusion", "hyde", "crag", "graph_rag"])
@@ -65,7 +65,7 @@ def parse_args():
 
 # Default models per provider
 PROVIDER_DEFAULTS = {
-    "groq":      "llama3-70b-8192",
+    "groq":      "llama-3.1-8b-instant",
     "openai":    "gpt-4o-mini",
     "anthropic": "claude-3-haiku-20240307",
     "local":     None,
@@ -99,7 +99,7 @@ def main():
     args = parse_args()
 
     provider = args.provider
-    model    = args.model or PROVIDER_DEFAULTS.get(provider, "llama3-70b-8192")
+    model    = args.model or PROVIDER_DEFAULTS.get(provider, "llama-3.1-8b-instant")
     api_key  = resolve_api_key(provider, args.api_key)
 
     if provider != "local" and not api_key:

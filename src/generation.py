@@ -41,18 +41,18 @@ _SYSTEM = (
     "You are a precise factual question-answering assistant.\n"
     "Rules:\n"
     "1. Read the numbered context passages carefully.\n"
-    "2. Answer using ONLY information found in those passages.\n"
-    "3. Provide a concise but complete answer. For simple facts, give the key fact (name, date, number). For longer explanations or multi-part answers, provide the full accurate response.\n"
-    "4. Do NOT repeat the question. Use full sentences if needed for clarity.\n"
-    "5. If the answer truly cannot be found in the passages, output exactly: I don't know\n"
-    "6. End your answer with the citation number(s), e.g. [1] or [1][2].\n"
+    "2. Answer using ONLY information found in those passages. Do not add external knowledge.\n"
+    "3. Provide the exact key fact from the passages. For numbers, dates, or names, give the precise value.\n"
+    "4. If multiple facts, list them clearly. For long answers, summarize accurately.\n"
+    "5. If the answer is not in the passages, output exactly: I don't know\n"
+    "6. Cite the passage number(s) where you found the answer, e.g. [1] or [1][2].\n"
     "\n"
-    "Good answer examples:\n"
+    "Examples:\n"
     "  Q: Who directed Inception?               → Christopher Nolan [4]\n"
     "  Q: When was the Eiffel Tower built?       → 1889 [2]\n"
     "  Q: Which country has largest population?  → China [1]\n"
     "  Q: How many Grand Slams has Federer won?  → 20 [3]\n"
-    "  Q: What company did Marc Benioff work for before Salesforce? → Marc Benioff spent 13 years at Oracle before launching Salesforce [1]\n"
+    "  Q: What company did Marc Benioff work for? → Oracle [1]\n"
     "  Q: Is this question valid?               → invalid question\n"
 )
 
@@ -63,7 +63,7 @@ def generate_answer(
     provider: Optional[str] = None,
     model: Optional[str] = None,
     api_key: Optional[str] = None,
-    max_tokens: int = 100,
+    max_tokens: int = 200,
     temperature: float = 0.0,
 ) -> str:
     cfg     = _load_config()
@@ -80,7 +80,7 @@ def generate_answer(
     user_msg = (
         f"Context passages:\n{context}\n"
         f"Question: {query}\n"
-        f"Short direct answer (just the key fact + citation number):"
+        f"Concise complete answer (provide the key fact with full details + citation number):"
     )
 
     try:
@@ -236,6 +236,14 @@ def _local_fallback(query: str, retrieved: List[Tuple[str, float, dict]]) -> str
         top_text, _, top_meta = retrieved[0]
         return f"{top_text[:200].strip()} [Source: {top_meta.get('source_url','')}]"
 
+    # For questions that likely need longer answers, return full sentence
+    q_lower = query.lower()
+    if any(word in q_lower for word in ["what is", "describe", "explain", "how many", "what company", "where did"]):
+        return f"{best_sent} [Source: {best_url}]"
+
     # Try to extract a short answer; fall back to full sentence
     short = _extract_short_answer(query, best_sent)
-    return f"{short} [Source: {best_url}]"
+    if short != best_sent:  # If extraction changed it, use short
+        return f"{short} [Source: {best_url}]"
+    else:  # Otherwise, use full sentence for better matching
+        return f"{best_sent} [Source: {best_url}]"

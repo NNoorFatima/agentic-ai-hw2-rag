@@ -107,8 +107,8 @@ def _rrf(lists, k=60):
 def run(
     query: str,
     corpus_index,
-    top_k: int = 10,
-    embedding_model: str = "all-MiniLM-L6-v2",
+    top_k: int = 15,
+    embedding_model: str = "all-mpnet-base-v2",
     provider: str = "groq",
     gen_model: str = "llama3-70b-8192",
     api_key: Optional[str] = None,

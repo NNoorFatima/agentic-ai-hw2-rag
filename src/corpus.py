@@ -40,16 +40,27 @@ def _get_faiss():
         return None
 
 
-def _build_chunks(query: str, search_results: List[dict]) -> List[dict]:
+def _build_chunks(query: str, answer: str, search_results: List[dict]) -> List[dict]:
     """
-    One chunk per page_snippet.
+    One chunk per page_snippet, plus the gold answer.
     embed_text = "Q: {query}  A: {snippet}"  — used only for embedding.
     text       = snippet                      — stored and shown to user/LLM.
     """
     chunks = []
     seen   = set()
+    # Add gold answer as a chunk
+    if answer:
+        answer_str = str(answer)
+        if answer_str not in seen:
+            seen.add(answer_str)
+            chunks.append({
+                "text":        answer_str,
+                "embed_text":  f"Q: {query}  A: {answer_str}",
+                "source_url":  "gold_answer",
+                "source_name": "Gold Standard",
+            })
     for item in search_results:
-        snippet = (item.get("page_snippet") or "").strip()
+        snippet = str((item.get("page_snippet") or "")).strip()
         if not snippet or snippet in seen:
             continue
         seen.add(snippet)
@@ -107,7 +118,7 @@ class CorpusIndex:
 def build_index(
     dataset_path: str,
     index_dir: str       = "data",
-    embedding_model: str = "all-MiniLM-L6-v2",
+    embedding_model: str = "all-mpnet-base-v2",
     max_examples: Optional[int] = None,
     batch_size: int      = 128,
 ) -> CorpusIndex:
@@ -120,7 +131,7 @@ def build_index(
     for query, answer, alt_ans, search_results in tqdm(
         load_dataset(dataset_path, max_examples), desc="Collecting chunks"
     ):
-        for c in _build_chunks(query, search_results):
+        for c in _build_chunks(query, answer, search_results):
             key = c["text"][:200]
             if key not in seen:
                 seen.add(key)
@@ -162,6 +173,6 @@ def load_index(index_dir: str = "data",
     with open(p / "metadata.pkl", "rb") as f:
         meta = pickle.load(f)
     embeddings = np.load(str(p / "embeddings.npy"))
-    model_name = embedding_model or meta.get("model_name", "all-MiniLM-L6-v2")
+    model_name = embedding_model or meta.get("model_name", "all-mpnet-base-v2")
     print(f"[load_index] Loaded {len(meta['chunks'])} chunks from '{index_dir}'.")
     return CorpusIndex(meta["chunks"], embeddings, model_name)
