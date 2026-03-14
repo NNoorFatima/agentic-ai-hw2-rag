@@ -1,203 +1,114 @@
-# """
-# Load CRAG dataset from dataset/crag_task_1_and_2_dev_v4.jsonl.
-# Do not change the file path or this module's location in the project.
-# """
-
-# import json
-# from pathlib import Path
-# from typing import Generator, Optional
-
-
-# # Default path relative to project root (when running from project root)
-# DEFAULT_DATASET_PATH = "dataset/crag_task_1_and_2_dev_v4.jsonl"
-
-
-# def load_examples(
-#     path: Optional[str] = None,
-#     limit: Optional[int] = None,
-# ) -> Generator[dict, None, None]:
-#     """
-#     Load CRAG JSONL and yield one example per row.
-
-#     Args:
-#         path: Path to the .jsonl file. Defaults to dataset/crag_task_1_and_2_dev_v4.jsonl
-#               (relative to current working directory).
-#         limit: If set, yield at most this many examples (useful for testing).
-
-#     Yields:
-#         Dict for each example with at least:
-#           - query: str
-#           - answer: str
-#           - alt_ans: list[str]
-#           - search_results: list[dict] with 'page_snippet', 'page_name', 'page_url', etc.
-#         Also includes interaction_id, domain, question_type for debugging.
-#     """
-#     file_path = Path(path or DEFAULT_DATASET_PATH)
-#     if not file_path.is_absolute():
-#         file_path = Path.cwd() / file_path
-
-#     if not file_path.exists():
-#         raise FileNotFoundError(f"Dataset not found: {file_path}")
-
-#     count = 0
-#     with open(file_path, "r", encoding="utf-8") as f:
-#         for line in f:
-#             line = line.strip()
-#             if not line:
-#                 continue
-#             try:
-#                 item = json.loads(line)
-#             except json.JSONDecodeError as e:
-#                 raise ValueError(f"Invalid JSON at line {count + 1}: {e}") from e
-
-#             # Yield the fields needed for RAG + optional metadata
-#             # Use .get() for search_results so missing or malformed rows don't crash the loader
-#             search_results = item.get("search_results")
-#             if not isinstance(search_results, list):
-#                 search_results = []
-
-#             yield {
-#                 "interaction_id": item.get("interaction_id"),
-#                 "query": item.get("query", ""),
-#                 "answer": item.get("answer", ""),
-#                 "alt_ans": item.get("alt_ans") or [],
-#                 "search_results": search_results,
-#                 "domain": item.get("domain"),
-#                 "question_type": item.get("question_type"),
-#             }
-#             count += 1
-#             if limit is not None and count >= limit:
-#                 return
-
-
-# def get_passages_for_retrieval(example: dict, use_snippet: bool = True) -> list[str]:
-#     """
-#     Get a list of text passages from one example for embedding/retrieval.
-#     Each passage is either page_snippet (short) or extracted text from page_result (HTML).
-
-#     Args:
-#         example: One item yielded by load_examples().
-#         use_snippet: If True, use page_snippet; if False, use page_result (raw HTML - caller may strip tags).
-
-#     Returns:
-#         List of 5 strings (one per search result).
-#     """
-#     passages = []
-#     for sr in example["search_results"]:
-#         if use_snippet:
-#             passages.append(sr.get("page_snippet") or "")
-#         else:
-#             passages.append(sr.get("page_result") or "")
-#     return passages
-
-
-# if __name__ == "__main__":
-#     # Quick check: load first 3 examples and print summary
-#     print("Loading first 3 examples from CRAG dataset...\n")
-#     for i, ex in enumerate(load_examples(limit=3)):
-#         print(f"--- Example {i + 1} ---")
-#         print(f"  interaction_id: {ex['interaction_id']}")
-#         print(f"  query: {ex['query'][:80]}...")
-#         print(f"  answer: {ex['answer'][:60]}...")
-#         print(f"  alt_ans count: {len(ex['alt_ans'])}")
-#         print(f"  search_results count: {len(ex['search_results'])}")
-#         if ex["search_results"]:
-#             first = ex["search_results"][0]
-#             print(f"  first result keys: {list(first.keys())}")
-#             snip = (first.get("page_snippet") or "")[:100]
-#             print(f"  first snippet: {snip}...")
-#         print()
-#     print("Data loader check done.")
 """
 data_loader.py
 --------------
-Load the CRAG dataset. Yields (query, answer, alt_ans, search_results) per example.
+Load CRAG dataset. Supports both the original load_examples() API
+and the load_dataset() wrapper used by corpus.py / run_evaluation.py.
 """
 
 import json
 from pathlib import Path
-from typing import Iterator, Tuple, List, Any, Optional
+from typing import Generator, Iterator, Optional, List, Tuple, Any
 
+DEFAULT_DATASET_PATH = "dataset/crag_task_1_and_2_dev_v4.jsonl"
+
+
+# ── Original API (from uploaded data_loader.py) ───────────────────────────────
+
+def load_examples(
+    path: Optional[str] = None,
+    limit: Optional[int] = None,
+) -> Generator[dict, None, None]:
+    """
+    Load CRAG JSONL and yield one dict per row.
+    Keys: interaction_id, query, answer, alt_ans, search_results, domain, question_type
+    """
+    file_path = Path(path or DEFAULT_DATASET_PATH)
+    if not file_path.is_absolute():
+        file_path = Path.cwd() / file_path
+
+    if not file_path.exists():
+        # Also try one level up (src/ subdirectory case)
+        alt = Path.cwd().parent / file_path
+        if alt.exists():
+            file_path = alt
+        else:
+            raise FileNotFoundError(f"Dataset not found: {file_path}")
+
+    count = 0
+    with open(file_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"Invalid JSON at line {count + 1}: {e}") from e
+
+            search_results = item.get("search_results")
+            if not isinstance(search_results, list):
+                search_results = []
+
+            yield {
+                "interaction_id": item.get("interaction_id"),
+                "query":          item.get("query", ""),
+                "answer":         item.get("answer", ""),
+                "alt_ans":        item.get("alt_ans") or [],
+                "search_results": search_results,
+                "domain":         item.get("domain"),
+                "question_type":  item.get("question_type"),
+            }
+            count += 1
+            if limit is not None and count >= limit:
+                return
+
+
+def get_passages_for_retrieval(example: dict, use_snippet: bool = True) -> List[str]:
+    """Return list of text passages from one example's search_results."""
+    passages = []
+    for sr in example["search_results"]:
+        key = "page_snippet" if use_snippet else "page_result"
+        passages.append(sr.get(key) or "")
+    return passages
+
+
+# ── Compatibility wrapper used by corpus.py / run_evaluation.py ───────────────
 
 def load_dataset(
     dataset_path: str,
     max_examples: Optional[int] = None,
 ) -> Iterator[Tuple[str, str, Any, List[dict]]]:
     """
-    Iterate over the CRAG JSONL dataset.
-
-    Yields
-    ------
-    query         : str   – the user's question
-    answer        : str   – the gold reference answer
-    alt_ans       : str | list[str] | None – alternative answers (may be absent)
-    search_results: list[dict] – web search result items (each has page_snippet,
-                                 page_result, page_url, page_name)
+    Wrapper around load_examples() that yields
+    (query, answer, alt_ans, search_results) tuples.
+    Used by corpus.py and run_evaluation.py.
     """
-    path = Path(dataset_path)
-    if not path.exists():
-        raise FileNotFoundError(
-            f"Dataset not found at '{dataset_path}'. "
-            "Please download crag_task_1_and_2_dev_v4.jsonl and place it in dataset/."
+    for ex in load_examples(path=dataset_path, limit=max_examples):
+        yield (
+            ex["query"],
+            ex["answer"],
+            ex["alt_ans"],
+            ex["search_results"],
         )
-
-    count = 0
-    with open(path, "r", encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError as exc:
-                print(f"[data_loader] Skipping malformed line: {exc}")
-                continue
-
-            query = row.get("query", "")
-            answer = row.get("answer", "")
-            alt_ans = row.get("alt_ans", None)
-            search_results = row.get("search_results", [])
-
-            # Normalise alt_ans to always be a list (or empty list)
-            if alt_ans is None:
-                alt_ans = []
-            elif isinstance(alt_ans, str):
-                alt_ans = [alt_ans]
-
-            yield query, answer, alt_ans, search_results
-
-            count += 1
-            if max_examples is not None and count >= max_examples:
-                break
 
 
 def load_all(dataset_path: str, max_examples: Optional[int] = None) -> List[dict]:
-    """
-    Load the entire dataset into memory as a list of dicts with keys:
-      query, answer, alt_ans, search_results
-    """
-    records = []
-    for query, answer, alt_ans, search_results in load_dataset(dataset_path, max_examples):
-        records.append(
-            {
-                "query": query,
-                "answer": answer,
-                "alt_ans": alt_ans,
-                "search_results": search_results,
-            }
-        )
-    return records
+    """Load entire dataset into a list of dicts."""
+    return list(load_examples(path=dataset_path, limit=max_examples))
 
 
 if __name__ == "__main__":
-    import sys
-
-    path = sys.argv[1] if len(sys.argv) > 1 else "dataset/crag_task_1_and_2_dev_v4.jsonl"
-    for i, (q, a, aa, sr) in enumerate(load_dataset(path, max_examples=3)):
-        print(f"\n--- Example {i+1} ---")
-        print(f"Query     : {q}")
-        print(f"Answer    : {a}")
-        print(f"Alt Ans   : {aa}")
-        print(f"#Results  : {len(sr)}")
-        if sr:
-            print(f"First snip: {sr[0].get('page_snippet', '')[:120]}")
+    print("Loading first 3 examples from CRAG dataset...\n")
+    for i, ex in enumerate(load_examples(limit=3)):
+        print(f"--- Example {i + 1} ---")
+        print(f"  interaction_id: {ex['interaction_id']}")
+        print(f"  query:          {ex['query'][:80]}...")
+        print(f"  answer:         {ex['answer'][:60]}...")
+        print(f"  alt_ans count:  {len(ex['alt_ans'])}")
+        print(f"  search_results: {len(ex['search_results'])}")
+        if ex["search_results"]:
+            first = ex["search_results"][0]
+            snip  = (first.get("page_snippet") or "")[:100]
+            print(f"  first snippet:  {snip}...")
+        print()
+    print("Data loader check done.")

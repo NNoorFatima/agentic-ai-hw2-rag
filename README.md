@@ -82,7 +82,6 @@ python -c "from src.corpus import build_index; build_index('dataset/crag_task_1_
 ```
 This reads the dataset, embeds all chunks, and saves the FAISS index to the data/ folder. You only do this once.
 
-
 ```bash
 set GROQ_API_KEY=gsk_your_key_here
 python run_evaluation.py --provider groq --model llama3-70b-8192 --max-examples 100

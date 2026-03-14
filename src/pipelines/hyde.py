@@ -92,14 +92,17 @@ def _generate_hypothetical_doc(
 
 def _rrf(lists, k=60):
     scores, store = {}, {}
+    max_cosine = {}
     for lst in lists:
-        for rank, (text, _, meta) in enumerate(lst, 1):
+        for rank, (text, cos_score, meta) in enumerate(lst, 1):
             key = text[:200]
             scores[key] = scores.get(key, 0.0) + 1.0 / (k + rank)
             store[key]  = (text, meta)
-    return [(store[k][0], scores[k], store[k][1])
-            for k in sorted(scores, key=lambda x: scores[x], reverse=True)]
-
+            max_cosine[key] = max(max_cosine.get(key, 0.0), cos_score)
+            
+    # Sort by RRF score, but return the real cosine score
+    fused = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)
+    return [(store[k][0], max_cosine[k], store[k][1]) for k in fused]
 
 def run(
     query: str,

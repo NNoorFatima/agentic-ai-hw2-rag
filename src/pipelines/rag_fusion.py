@@ -109,13 +109,18 @@ def _rrf(ranked_lists: List[List[Tuple[str, float, dict]]], k: int = 60) -> List
     """Reciprocal Rank Fusion over multiple ranked lists."""
     scores: Dict[str, float] = {}
     store:  Dict[str, Tuple[str, dict]] = {}
+    max_cosine = {}
     for lst in ranked_lists:
-        for rank, (text, _, meta) in enumerate(lst, 1):
+        for rank, (text, cos_score, meta) in enumerate(lst, 1):
             key = text[:200]
             scores[key] = scores.get(key, 0.0) + 1.0 / (k + rank)
             store[key]  = (text, meta)
-    return [(store[k][0], scores[k], store[k][1])
-            for k in sorted(scores, key=lambda x: scores[x], reverse=True)]
+            max_cosine[key] = max(max_cosine.get(key, 0.0), cos_score)
+    # Sort by RRF score, but RETURN the real cosine score
+    fused = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)
+    return [(store[k][0], max_cosine[k], store[k][1]) for k in fused]
+    # return [(store[k][0], scores[k], store[k][1])
+    #         for k in sorted(scores, key=lambda x: scores[x], reverse=True)]
 
 
 def run(
@@ -139,12 +144,14 @@ def run(
     variants = _generate_query_variants(
         query, n=num_variants, provider=provider, model=gen_model, api_key=api_key
     )
+    variants.append(query)
 
     # 2. Retrieve per-variant with more candidates than top_k
     fetch_k = top_k * 2
     all_lists = []
     for v in variants:
-        emb = embed_query(v, model_name=embedding_model)
+        v_clean = re.sub(r'^(\d+\.\s*|-\s*|Variant \d+:\s*)', '', v).strip()
+        emb = embed_query(v_clean, model_name=embedding_model)
         all_lists.append(corpus_index.retrieve(emb, top_k=fetch_k))
 
     # 3. RRF merge

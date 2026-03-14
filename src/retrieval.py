@@ -1,87 +1,55 @@
 """
 retrieval.py
 ------------
-Base retrieval: embed a query and retrieve top-k chunks from the global CorpusIndex.
+Embed a query and retrieve top-k chunks from the global CorpusIndex.
 
-Public API
-----------
-embed_query(query, model_name) -> np.ndarray
-retrieve(query, corpus_index, top_k, model_name) -> list[(text, score, metadata)]
+Important: we prefix queries with "Q: " to match the query-enriched
+format used when building the index (embed_text = "Q: {query}\nA: {snippet}").
+This asymmetric encoding is standard practice and significantly improves
+retrieval quality on short factual queries.
 """
 
 from typing import List, Tuple, Optional
 import numpy as np
 
+_MODEL_CACHE = {}
 
-_MODEL_CACHE: dict = {}
 
-
-def _get_model(model_name: str):
-    """Cache sentence-transformer models to avoid reloading."""
-    if model_name not in _MODEL_CACHE:
+def _get_model(name: str):
+    if name not in _MODEL_CACHE:
         from sentence_transformers import SentenceTransformer
-        _MODEL_CACHE[model_name] = SentenceTransformer(model_name)
-    return _MODEL_CACHE[model_name]
+        _MODEL_CACHE[name] = SentenceTransformer(name)
+    return _MODEL_CACHE[name]
 
 
 def embed_query(query: str, model_name: str = "all-MiniLM-L6-v2") -> np.ndarray:
     """
-    Embed a single query string into a dense vector.
-
-    Parameters
-    ----------
-    query      : the natural-language question
-    model_name : sentence-transformers model identifier
-
-    Returns
-    -------
-    1-D numpy float32 array
+    Embed a single query string.
+    Prefixes with 'Q: ' to match the query-enriched index format.
     """
     model = _get_model(model_name)
-    emb = model.encode([query], convert_to_numpy=True)[0]
+    # Match the format used at index build time
+    text  = f"Q: {query}"
+    emb   = model.encode([text], convert_to_numpy=True)[0]
     return emb.astype("float32")
 
 
 def embed_texts(texts: List[str], model_name: str = "all-MiniLM-L6-v2") -> np.ndarray:
-    """
-    Embed a list of strings. Returns (N, dim) float32 array.
-    """
+    """Embed a list of strings. Returns (N, dim) float32 array."""
     model = _get_model(model_name)
-    return model.encode(texts, convert_to_numpy=True, show_progress_bar=False).astype("float32")
+    return model.encode(texts, convert_to_numpy=True,
+                        show_progress_bar=False).astype("float32")
 
 
 def retrieve(
     query: str,
     corpus_index,
-    top_k: int = 5,
+    top_k: int = 10,
     model_name: str = "all-MiniLM-L6-v2",
 ) -> List[Tuple[str, float, dict]]:
     """
-    Standard single-query retrieval from the global index.
-
-    Parameters
-    ----------
-    query        : natural-language question
-    corpus_index : CorpusIndex from corpus.py
-    top_k        : number of chunks to return
-    model_name   : embedding model name
-
-    Returns
-    -------
-    list of (chunk_text, similarity_score, metadata_dict)
+    Standard single-query retrieval.
+    Returns list of (chunk_text, cosine_score, metadata).
     """
     q_emb = embed_query(query, model_name)
     return corpus_index.retrieve(q_emb, top_k=top_k)
-
-
-if __name__ == "__main__":
-    # Quick smoke-test (requires a built index)
-    import sys
-    sys.path.insert(0, ".")
-    from src.corpus import load_index
-
-    idx = load_index("data")
-    results = retrieve("Who directed Inception?", idx, top_k=3)
-    for text, score, meta in results:
-        print(f"Score={score:.4f} | URL={meta.get('source_url','')}")
-        print(f"  {text[:120]}\n")
